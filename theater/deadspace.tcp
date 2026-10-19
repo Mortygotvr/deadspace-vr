@@ -1,0 +1,288 @@
+// @theater-tcp-module
+// Dead Space VR for the Theater Control Panel: spawns the game's own
+// monsters in front of Isaac on command (channel points, chat commands...),
+// and turns the game's events into triggers. Talks to the mod's game feed
+// (docs/feed.md in the Dead Space VR mod): `spawn` out, the feed's
+// messages in.
+(function() {
+    const MODULE_ID = "deadspace_vr";
+    const MODULE_NAME = "Dead Space VR";
+    const MONSTERS = [
+        { value: "slasher", label: "Slasher" },
+        { value: "leaper", label: "Leaper" },
+        { value: "lurker", label: "Lurker" },
+        { value: "pregnant", label: "Pregnant" },
+        { value: "brute", label: "Brute" },
+        { value: "hunter", label: "Hunter" },
+        { value: "infector", label: "Infector" },
+        { value: "swarm", label: "Swarm" },
+        { value: "exploder", label: "Exploder" }
+    ];
+    // The feed refuses more per command.
+    const MAX_COUNT = 5;
+
+    let client = null;
+    let hudInterval = null;
+    let socketState = "Disconnected";
+    let health = null;
+    let lastSpawn = null;
+
+    class DeadSpaceClient {
+        constructor(url) {
+            this.url = url;
+            this.websocket = null;
+            // Keeps trying while the game is closed.
+            this.reconnectInterval = 5000;
+            this.reconnectTimer = null;
+            this.terminateRequested = false;
+        }
+
+        connect() {
+            if (this.websocket && (this.websocket.readyState === WebSocket.OPEN || this.websocket.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+            socketState = "Connecting";
+            updateHUD();
+            try {
+                this.websocket = new WebSocket(this.url);
+            } catch (e) {
+                socketState = "Disconnected";
+                updateHUD();
+                this.tryReconnect();
+                return;
+            }
+            this.websocket.onopen = () => {
+                socketState = "Connected";
+                logMsg("[Dead Space] Connected to the game feed.");
+                updateHUD();
+            };
+            this.websocket.onmessage = (event) => {
+                let m;
+                try {
+                    m = JSON.parse(event.data);
+                } catch (e) {
+                    return;
+                }
+                if (!m || !m.type) return;
+                if (m.type === "state") {
+                    health = m.in_game ? { now: m.health, max: m.health_max } : null;
+                    return;
+                }
+                if (m.type === "spawned" || m.type === "spawn_failed") {
+                    lastSpawn = m;
+                    logMsg(m.type === "spawned"
+                        ? `[Dead Space] ${m.monster} spawned: ${m.detail}`
+                        : `[Dead Space] ${m.monster} not spawned: ${m.reason}`, m.type !== "spawned");
+                    updateHUD();
+                }
+                // Frequent ones aren't triggers.
+                if (m.type === "monsters" || m.type === "hello") return;
+                const eventData = {
+                    eventType: m.type,
+                    monster: m.monster || "",
+                    intensity: m.intensity || 0
+                };
+                const payload = {
+                    username: "Dead Space",
+                    message: m.type,
+                    customData: Object.assign({ raw: event.data }, m)
+                };
+                if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                    window.TheaterController.dispatchTrigger("deadspace_event", eventData, payload);
+                }
+            };
+            this.websocket.onerror = () => {};
+            this.websocket.onclose = () => {
+                socketState = "Disconnected";
+                health = null;
+                updateHUD();
+                this.tryReconnect();
+            };
+        }
+
+        tryReconnect() {
+            if (this.terminateRequested || this.reconnectTimer) return;
+            this.reconnectTimer = setTimeout(() => {
+                this.reconnectTimer = null;
+                if (!this.websocket || this.websocket.readyState === WebSocket.CLOSED) {
+                    this.connect();
+                }
+            }, this.reconnectInterval);
+        }
+
+        send(obj) {
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) return false;
+            this.websocket.send(JSON.stringify(obj));
+            return true;
+        }
+
+        terminate() {
+            this.terminateRequested = true;
+            clearTimeout(this.reconnectTimer);
+            if (this.websocket) {
+                this.websocket.onopen = null;
+                this.websocket.onmessage = null;
+                this.websocket.onerror = null;
+                this.websocket.onclose = null;
+                if (this.websocket.readyState === WebSocket.OPEN || this.websocket.readyState === WebSocket.CONNECTING) {
+                    this.websocket.close();
+                }
+            }
+            socketState = "Disconnected";
+            health = null;
+        }
+    }
+
+    function escapeHtml(text) {
+        return String(text).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function updateHUD() {
+        const container = document.getElementById('loaded-modules-container');
+        if (!container) return;
+        let ourCard = null;
+        container.querySelectorAll('.command-row-header strong').forEach(header => {
+            if (header.innerText === MODULE_NAME) {
+                ourCard = header.closest('.command-row');
+            }
+        });
+        if (!ourCard) return;
+        let hud = ourCard.querySelector('#deadspace-status-hud');
+        if (!hud) {
+            hud = document.createElement('div');
+            hud.id = 'deadspace-status-hud';
+            hud.style.marginTop = '15px';
+            hud.style.background = '#111';
+            hud.style.padding = '12px';
+            hud.style.borderRadius = '6px';
+            hud.style.border = '1px solid #333';
+            ourCard.appendChild(hud);
+        }
+        const statusColor = socketState === "Connected" ? "#4caf50" : (socketState === "Connecting" ? "#ffeb3b" : "#f44336");
+        let content = `
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; padding-bottom: 8px; margin-bottom: 8px;">
+                <span style="font-size: 0.85em; color: #888; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">Dead Space Connection</span>
+                <span style="font-size: 0.85em; color: ${statusColor}; font-weight: bold;">● ${socketState}</span>
+            </div>
+        `;
+        if (socketState !== "Connected") {
+            content += `<p style="color: #666; font-size: 0.85em; margin: 0; font-style: italic; text-align: center; padding: 10px 0;">Waiting for Dead Space (the VR mod's game feed)...</p>`;
+        } else {
+            if (health && health.max > 0) {
+                const pct = Math.max(0, Math.min(100, Math.round(health.now / health.max * 100)));
+                const colour = pct < 30 ? "#f44336" : "#4caf50";
+                content += `
+                    <div style="font-size: 0.7em; color: #666; text-transform: uppercase; font-weight: bold;">Isaac's health</div>
+                    <div style="background: #222; border-radius: 4px; height: 10px; margin: 4px 0 10px;">
+                        <div style="background: ${colour}; width: ${pct}%; height: 10px; border-radius: 4px;"></div>
+                    </div>
+                `;
+            } else {
+                content += `<p style="color: #666; font-size: 0.85em; margin: 0 0 8px; font-style: italic;">Not in a level.</p>`;
+            }
+            if (lastSpawn) {
+                const ok = lastSpawn.type === "spawned";
+                content += `
+                    <div style="font-size: 0.7em; color: #666; text-transform: uppercase; font-weight: bold;">Last spawn</div>
+                    <div style="font-size: 0.85em; color: ${ok ? '#4caf50' : '#ffb74d'};">
+                        ${escapeHtml(lastSpawn.monster)}: ${escapeHtml(ok ? "spawned" : lastSpawn.reason)}
+                    </div>
+                `;
+            }
+        }
+        hud.innerHTML = content;
+    }
+
+    window.TheaterController.registerModule(MODULE_ID, {
+        name: MODULE_NAME,
+        description: "Spawns Dead Space's own monsters in front of Isaac (the VR mod's game feed) and triggers on what happens in the game.",
+        configFields: [
+            { id: "socket_url", label: "Game feed URL", type: "text", default: "ws://127.0.0.1:47601" }
+        ],
+        onLoad(moduleConfig) {
+            const url = moduleConfig.socket_url || "ws://127.0.0.1:47601";
+            logMsg(`[Dead Space] Module loaded. Connecting to ${url}...`);
+            client = new DeadSpaceClient(url);
+            client.connect();
+            hudInterval = setInterval(updateHUD, 2000);
+        },
+        onUnload() {
+            logMsg("[Dead Space] Module unloaded.");
+            clearInterval(hudInterval);
+            if (client) {
+                client.terminate();
+                client = null;
+            }
+            const hud = document.getElementById('deadspace-status-hud');
+            if (hud && hud.parentNode) {
+                hud.parentNode.removeChild(hud);
+            }
+        }
+    });
+
+    // Spawn: a monster (1 to 5) 3 m in front of Isaac. The game answers with
+    // the "Spawned" / "Spawn failed" events (the trigger below).
+    window.TheaterController.registerCommand(
+        "deadspace_spawn",
+        async (inputs, matches, payload) => {
+            const monster = String(inputs.monster || "slasher").trim().toLowerCase();
+            let count = 1;
+            const countText = String(inputs.count ?? "1");
+            try {
+                count = Number(window.TheaterController.evalMath(countText, matches, payload));
+            } catch (e) {
+                count = Number(window.TheaterController.replaceVariables(countText, matches, payload));
+            }
+            if (!Number.isFinite(count)) count = 1;
+            count = Math.max(1, Math.min(MAX_COUNT, Math.round(count)));
+            if (!client || !client.send({ type: "spawn", monster: monster, count: count })) {
+                logMsg(`[Dead Space] Can't spawn ${monster}: the game isn't connected.`, true);
+                return;
+            }
+            logMsg(`[Dead Space] Asked for ${count} ${monster}.`);
+        },
+        {
+            label: "Dead Space: Spawn Monster",
+            fields: [
+                { id: "monster", label: "Monster (one the game has met)", type: "select", options: MONSTERS, default: "slasher" },
+                { id: "count", label: "How many (1 to 5; variables and math work, e.g. {1})", type: "text", default: "1" }
+            ]
+        },
+        MODULE_ID
+    );
+
+    // Game events: the feed's message types.
+    window.TheaterController.registerTrigger(
+        "deadspace_event",
+        (t, eventData) => {
+            if (t.eventType !== eventData.eventType) return false;
+            if (t.monster && eventData.monster && t.monster !== eventData.monster) return false;
+            if (t.minIntensity && eventData.intensity < Number(t.minIntensity)) return false;
+            return true;
+        },
+        {
+            label: "Dead Space Event",
+            fields: [
+                {
+                    id: "eventType",
+                    label: "Game event",
+                    type: "select",
+                    options: [
+                        { value: "spawned", label: "Monster spawned ({customData.monster}, {customData.detail})" },
+                        { value: "spawn_failed", label: "Spawn failed ({customData.monster}, {customData.reason})" },
+                        { value: "damage", label: "Isaac hurt ({customData.amount}, {customData.health})" },
+                        { value: "heal", label: "Isaac healed" },
+                        { value: "grab_start", label: "Grabbed by a monster" },
+                        { value: "grab_end", label: "Grab ended ({customData.escaped})" },
+                        { value: "death", label: "Isaac died" },
+                        { value: "stasis_used", label: "Stasis used" }
+                    ],
+                    default: "spawned"
+                },
+                { id: "monster", label: "Only this monster (spawn events, optional)", type: "text", default: "" },
+                { id: "minIntensity", label: "Minimum hit intensity 0 to 1 (damage, optional)", type: "number", default: 0 }
+            ]
+        },
+        MODULE_ID
+    );
+})();
