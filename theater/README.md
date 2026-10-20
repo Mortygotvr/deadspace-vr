@@ -5,10 +5,16 @@ Load it in the panel the same way as its other modules.
 
 With it you can:
 
-- **Spawn the game's own monsters in front of Isaac** from any trigger, for
+- **Spawn the game's own monsters near Isaac** from any trigger, for
   example channel point redeems or chat commands. Use the command
-  **Dead Space: Spawn Monster** and pick a monster and how many (1 to 5).
-  The count accepts the panel's variables and math, such as `{1}`.
+  **Dead Space: Spawn Monster** and pick a monster, how many (1 to 5) and
+  where:
+  - **behind** him, on floor he just walked;
+  - **in front** of him, on a spot in his view with room for it.
+
+  Monsters never appear inside walls: if there's no such spot, the spawn
+  fails instead. The count accepts the panel's variables and math, such
+  as `{1}`.
 - **React to the game** with the trigger **Dead Space Event**: monster
   spawned, spawn failed, Isaac hurt, grabbed, died, and more. For example,
   post a chat message when a redeemed slasher arrives.

@@ -1,6 +1,6 @@
 // @theater-tcp-module
 // Dead Space VR for the Theater Control Panel: spawns the game's own
-// monsters in front of Isaac on command (channel points, chat commands...),
+// monsters behind Isaac on command (channel points, chat commands...),
 // and turns the game's events into triggers. Talks to the mod's game feed
 // (docs/feed.md in the Dead Space VR mod): `spawn` out, the feed's
 // messages in.
@@ -195,7 +195,7 @@
 
     window.TheaterController.registerModule(MODULE_ID, {
         name: MODULE_NAME,
-        description: "Spawns Dead Space's own monsters in front of Isaac (the VR mod's game feed) and triggers on what happens in the game.",
+        description: "Spawns Dead Space's own monsters behind Isaac (the VR mod's game feed) and triggers on what happens in the game.",
         configFields: [
             { id: "socket_url", label: "Game feed URL", type: "text", default: "ws://127.0.0.1:47601" }
         ],
@@ -220,7 +220,8 @@
         }
     });
 
-    // Spawn: a monster (1 to 5) 3 m in front of Isaac. The game answers with
+    // Spawn: a monster (1 to 5) behind Isaac (on floor he walked) or in
+    // front of him (a spot in his view with room). The game answers with
     // the "Spawned" / "Spawn failed" events (the trigger below).
     window.TheaterController.registerCommand(
         "deadspace_spawn",
@@ -235,17 +236,19 @@
             }
             if (!Number.isFinite(count)) count = 1;
             count = Math.max(1, Math.min(MAX_COUNT, Math.round(count)));
-            if (!client || !client.send({ type: "spawn", monster: monster, count: count })) {
+            const where = inputs.where === "front" ? "front" : "behind";
+            if (!client || !client.send({ type: "spawn", monster: monster, count: count, where: where })) {
                 logMsg(`[Dead Space] Can't spawn ${monster}: the game isn't connected.`, true);
                 return;
             }
-            logMsg(`[Dead Space] Asked for ${count} ${monster}.`);
+            logMsg(`[Dead Space] Asked for ${count} ${monster} (${where}).`);
         },
         {
             label: "Dead Space: Spawn Monster",
             fields: [
                 { id: "monster", label: "Monster (one the game has met)", type: "select", options: MONSTERS, default: "slasher" },
-                { id: "count", label: "How many (1 to 5; variables and math work, e.g. {1})", type: "text", default: "1" }
+                { id: "count", label: "How many (1 to 5; variables and math work, e.g. {1})", type: "text", default: "1" },
+                { id: "where", label: "Where", type: "select", options: [ { value: "behind", label: "Behind Isaac (where he walked)" }, { value: "front", label: "In front of Isaac (a spot in his view with room)" } ], default: "behind" }
             ]
         },
         MODULE_ID
